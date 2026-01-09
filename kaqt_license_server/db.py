@@ -1,22 +1,22 @@
+from __future__ import annotations
+
 import os
 from flask_sqlalchemy import SQLAlchemy
+
 
 db = SQLAlchemy()
 
 
 def get_database_uri() -> str:
-    """
-    Render provides DATABASE_URL for Postgres.
-    For local dev, we fall back to sqlite.
-    Also fixes 'postgres://' -> 'postgresql://' for SQLAlchemy.
-    """
+    # Render Postgres gives DATABASE_URL
     url = os.getenv("DATABASE_URL", "").strip()
 
     if not url:
-        # Local dev fallback
-        return "sqlite:///kaqt_license.db"
+        # Local fallback (optional)
+        # Example: export DATABASE_URL="postgresql://user:pass@localhost:5432/kaqt"
+        raise RuntimeError("DATABASE_URL is missing. Set it in Render Environment Variables.")
 
-    # SQLAlchemy expects postgresql:// not postgres://
+    # Render uses postgres:// but SQLAlchemy expects postgresql://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
 
