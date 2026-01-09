@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from kaqt_license_server.db import db
+from db import db
 
 
 class License(db.Model):

@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from flask import Flask, jsonify, request
 
-from kaqt_license_server.db import db, get_database_uri
-from kaqt_license_server.models import License
+from db import db, get_database_uri
+from models import License
 
 
 def create_app() -> Flask:
