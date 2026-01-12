@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import os
 import datetime as dt
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
 
-from kaqt_license_server.db import db, get_database_uri
+db = SQLAlchemy()
 
 
 class License(db.Model):
@@ -35,7 +34,18 @@ class License(db.Model):
 def create_app() -> Flask:
     app = Flask(__name__)
 
-    app.config["SQLALCHEMY_DATABASE_URI"] = get_database_uri()
+    # Render will provide DATABASE_URL automatically if you attach Postgres
+    database_url = os.getenv("DATABASE_URL", "").strip()
+
+    if not database_url:
+        # Local fallback (SQLite)
+        database_url = "sqlite:///licenses.db"
+
+    # Render postgres URLs start with postgres:// but SQLAlchemy wants postgresql://
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     db.init_app(app)
@@ -43,13 +53,15 @@ def create_app() -> Flask:
     with app.app_context():
         db.create_all()
 
-    def _admin_ok(req) -> bool:
-        token = os.getenv("ADMIN_TOKEN", "").strip()
-        return bool(token) and req.headers.get("X-Admin-Token", "") == token
+    ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+    def require_admin():
+        token = request.headers.get("X-Admin-Token", "")
+        return bool(ADMIN_TOKEN) and token == ADMIN_TOKEN
 
     @app.get("/healthz")
     def healthz():
-        return jsonify({"ok": True, "service": "kaqt-license-server"})
+        return jsonify({"ok": True, "service": "kaqt-license-server-clean"})
 
     @app.post("/validate")
     def validate():
@@ -65,8 +77,10 @@ def create_app() -> Flask:
         lic = License.query.filter_by(license_key=license_key).first()
         if not lic:
             return jsonify({"ok": False, "message": "License key not found"}), 404
+
         if not lic.is_active:
             return jsonify({"ok": False, "message": "License is inactive"}), 403
+
         if lic.is_expired():
             return jsonify({"ok": False, "message": "License expired"}), 403
 
@@ -83,41 +97,63 @@ def create_app() -> Flask:
 
         return jsonify({"ok": True, "message": "License valid", "data": lic.to_dict()})
 
-    # ---- ADMIN endpoints (protected) ----
+    # ---- ADMIN ----
+    @app.get("/admin/list")
+    def admin_list():
+        if not require_admin():
+            return jsonify({"ok": False, "message": "unauthorized"}), 401
+        licenses = License.query.order_by(License.created_at.desc()).limit(200).all()
+        return jsonify({"ok": True, "data": [l.to_dict() for l in licenses]})
+
     @app.post("/admin/create")
     def admin_create():
-        if not _admin_ok(request):
-            return jsonify({"ok": False, "message": "Unauthorized"}), 401
+        if not require_admin():
+            return jsonify({"ok": False, "message": "unauthorized"}), 401
 
         data = request.get_json(silent=True) or {}
         license_key = str(data.get("license_key", "")).strip()
-        expires_at = data.get("expires_at")  # iso string optional
+        expires_at_str = str(data.get("expires_at", "")).strip()  # ISO format optional
 
         if not license_key:
             return jsonify({"ok": False, "message": "license_key missing"}), 400
 
-        existing = License.query.filter_by(license_key=license_key).first()
-        if existing:
-            return jsonify({"ok": False, "message": "Already exists"}), 409
+        if License.query.filter_by(license_key=license_key).first():
+            return jsonify({"ok": False, "message": "license_key already exists"}), 409
 
-        exp_dt = None
-        if expires_at:
-            exp_dt = dt.datetime.fromisoformat(expires_at)
+        expires_at = None
+        if expires_at_str:
+            try:
+                expires_at = dt.datetime.fromisoformat(expires_at_str)
+            except Exception:
+                return jsonify({"ok": False, "message": "expires_at must be ISO format"}), 400
 
-        lic = License(license_key=license_key, expires_at=exp_dt, is_active=True)
+        lic = License(license_key=license_key, expires_at=expires_at, is_active=True)
         db.session.add(lic)
         db.session.commit()
+
         return jsonify({"ok": True, "data": lic.to_dict()})
 
-    @app.get("/admin/list")
-    def admin_list():
-        if not _admin_ok(request):
-            return jsonify({"ok": False, "message": "Unauthorized"}), 401
+    @app.post("/admin/deactivate")
+    def admin_deactivate():
+        if not require_admin():
+            return jsonify({"ok": False, "message": "unauthorized"}), 401
 
-        rows = License.query.order_by(License.created_at.desc()).limit(200).all()
-        return jsonify({"ok": True, "data": [r.to_dict() for r in rows]})
+        data = request.get_json(silent=True) or {}
+        license_key = str(data.get("license_key", "")).strip()
+
+        lic = License.query.filter_by(license_key=license_key).first()
+        if not lic:
+            return jsonify({"ok": False, "message": "not found"}), 404
+
+        lic.is_active = False
+        db.session.commit()
+        return jsonify({"ok": True, "message": "deactivated", "data": lic.to_dict()})
 
     return app
 
 
 app = create_app()
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=True)

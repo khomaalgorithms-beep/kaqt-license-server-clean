@@ -1,1 +1,0 @@
-# makes kaqt_license_server a real python package
